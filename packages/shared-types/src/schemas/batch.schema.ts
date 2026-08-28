@@ -18,25 +18,25 @@ export const urlStatusSchema = z.enum([
 
 // Backend only accepts a flat urls[] array. CSV upload is parsed client-side
 // in apps/web before being sent here — see README for rationale.
-export const createBatchBodySchema = z.object({
+export const CreateBatchBody = z.object({
   // 500 is a guardrail assumption, not a hard requirement from product — it's
   // meant to keep a single batch from overwhelming the worker/queue; revisit
   // if real usage needs a bigger ceiling.
   urls: z.array(z.string().url()).min(1).max(500),
 });
-export type CreateBatchBody = z.infer<typeof createBatchBodySchema>;
+export type CreateBatchBodyType = z.infer<typeof CreateBatchBody>;
 
 // Response for a successful POST /batches (201). Just enough for the client
 // to start tracking the new batch — not the full BatchResponse shape.
-export const createBatchResponseSchema = z.object({
+export const CreateBatchResponse = z.object({
   id: z.string().uuid(),
   status: batchStatusSchema,
   totalUrls: z.number().int(),
   createdAt: z.string().datetime(),
 });
-export type CreateBatchResponse = z.infer<typeof createBatchResponseSchema>;
+export type CreateBatchResponseType = z.infer<typeof CreateBatchResponse>;
 
-export const batchResponseSchema = z.object({
+export const BatchResponse = z.object({
   id: z.string(),
   status: batchStatusSchema,
   totalUrls: z.number().int(),
@@ -44,9 +44,9 @@ export const batchResponseSchema = z.object({
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 });
-export type BatchResponse = z.infer<typeof batchResponseSchema>;
+export type BatchResponseType = z.infer<typeof BatchResponse>;
 
-export const urlResponseSchema = z.object({
+export const UrlResponse = z.object({
   id: z.string(),
   url: z.string(),
   status: urlStatusSchema,
@@ -56,12 +56,12 @@ export const urlResponseSchema = z.object({
   attemptCount: z.number().int(),
   lastError: z.string().nullable(),
 });
-export type UrlResponse = z.infer<typeof urlResponseSchema>;
+export type UrlResponseType = z.infer<typeof UrlResponse>;
 
-export const batchListResponseSchema = z.array(batchResponseSchema);
-export type BatchListResponse = z.infer<typeof batchListResponseSchema>;
+export const BatchListResponse = z.array(BatchResponse);
+export type BatchListResponseType = z.infer<typeof BatchListResponse>;
 
-export const batchDetailResponseSchema = batchResponseSchema.extend({
-  urls: z.array(urlResponseSchema),
+export const BatchDetailResponse = BatchResponse.extend({
+  urls: z.array(UrlResponse),
 });
-export type BatchDetailResponse = z.infer<typeof batchDetailResponseSchema>;
+export type BatchDetailResponseType = z.infer<typeof BatchDetailResponse>;

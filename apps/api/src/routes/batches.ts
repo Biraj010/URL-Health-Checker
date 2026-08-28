@@ -1,13 +1,13 @@
 import { z } from "zod";
 import type { FastifyPluginAsyncZod } from "fastify-type-provider-zod";
 import {
-  createBatchBodySchema,
-  createBatchResponseSchema,
-  batchResponseSchema,
-  urlResponseSchema,
-  batchListResponseSchema,
-  batchDetailResponseSchema,
-} from "../schemas/batch.schema.js";
+  CreateBatchBody,
+  CreateBatchResponse,
+  BatchResponse,
+  UrlResponse,
+  BatchListResponse,
+  BatchDetailResponse,
+} from "@url-checker/shared-types";
 import { normalizeUrls } from "../lib/validate-urls.js";
 import { db } from "../lib/db.js";
 import { urlChecksQueue } from "../lib/queue.js";
@@ -32,10 +32,10 @@ const batchesRoutes: FastifyPluginAsyncZod = async (fastify) => {
     "/",
     {
       schema: {
-        body: createBatchBodySchema,
+        body: CreateBatchBody,
         // Final response contract: 201 on successful creation.
         response: {
-          201: createBatchResponseSchema,
+          201: CreateBatchResponse,
           500: errorResponseSchema,
         },
       },
@@ -123,7 +123,7 @@ const batchesRoutes: FastifyPluginAsyncZod = async (fastify) => {
 
       return reply.status(201).send({
         id: batch.id,
-        status: batch.status as z.infer<typeof createBatchResponseSchema>["status"],
+        status: batch.status as z.infer<typeof CreateBatchResponse>["status"],
         totalUrls: batch.totalUrls,
         createdAt: batch.createdAt.toISOString(),
       });
@@ -135,7 +135,7 @@ const batchesRoutes: FastifyPluginAsyncZod = async (fastify) => {
     {
       schema: {
         response: {
-          200: batchListResponseSchema,
+          200: BatchListResponse,
         },
       },
     },
@@ -156,7 +156,7 @@ const batchesRoutes: FastifyPluginAsyncZod = async (fastify) => {
 
       const batchList = batches.map((batch) => ({
         id: batch.id,
-        status: batch.status as z.infer<typeof batchResponseSchema>["status"],
+        status: batch.status as z.infer<typeof BatchResponse>["status"],
         totalUrls: batch.totalUrls,
         completedCount: batch.completedCount,
         createdAt: batch.createdAt,
@@ -175,7 +175,7 @@ const batchesRoutes: FastifyPluginAsyncZod = async (fastify) => {
       schema: {
         params: idParamsSchema,
         response: {
-          200: batchDetailResponseSchema,
+          200: BatchDetailResponse,
           404: errorResponseSchema,
         },
       },
@@ -202,7 +202,7 @@ const batchesRoutes: FastifyPluginAsyncZod = async (fastify) => {
 
       return reply.status(200).send({
         id: batch.id,
-        status: batch.status as z.infer<typeof batchResponseSchema>["status"],
+        status: batch.status as z.infer<typeof BatchResponse>["status"],
         totalUrls: batch.totalUrls,
         completedCount: batch.completedCount,
         createdAt: batch.createdAt,
@@ -210,7 +210,7 @@ const batchesRoutes: FastifyPluginAsyncZod = async (fastify) => {
         urls: batch.urls.map((url) => ({
           id: url.id,
           url: url.url,
-          status: url.status as z.infer<typeof urlResponseSchema>["status"],
+          status: url.status as z.infer<typeof UrlResponse>["status"],
           httpStatus: url.httpStatus,
           responseTimeMs: url.responseTimeMs,
           title: url.title,
@@ -227,7 +227,7 @@ const batchesRoutes: FastifyPluginAsyncZod = async (fastify) => {
       schema: {
         params: idParamsSchema,
         response: {
-          200: batchResponseSchema,
+          200: BatchResponse,
           404: errorResponseSchema,
           409: errorResponseSchema,
         },
@@ -312,7 +312,7 @@ const batchesRoutes: FastifyPluginAsyncZod = async (fastify) => {
 
       return reply.status(200).send({
         id: updatedBatch.id,
-        status: updatedBatch.status as z.infer<typeof batchResponseSchema>["status"],
+        status: updatedBatch.status as z.infer<typeof BatchResponse>["status"],
         totalUrls: updatedBatch.totalUrls,
         completedCount: updatedBatch.completedCount,
         createdAt: updatedBatch.createdAt,
@@ -327,7 +327,7 @@ const batchesRoutes: FastifyPluginAsyncZod = async (fastify) => {
       schema: {
         params: idParamsSchema,
         response: {
-          200: batchResponseSchema,
+          200: BatchResponse,
           404: errorResponseSchema,
         },
       },
@@ -348,7 +348,7 @@ const batchesRoutes: FastifyPluginAsyncZod = async (fastify) => {
         // No-op, not an error — nothing to retry.
         return reply.status(200).send({
           id: batch.id,
-          status: batch.status as z.infer<typeof batchResponseSchema>["status"],
+          status: batch.status as z.infer<typeof BatchResponse>["status"],
           totalUrls: batch.totalUrls,
           completedCount: batch.completedCount,
           createdAt: batch.createdAt,
@@ -409,7 +409,7 @@ const batchesRoutes: FastifyPluginAsyncZod = async (fastify) => {
 
       return reply.status(200).send({
         id: updatedBatch.id,
-        status: updatedBatch.status as z.infer<typeof batchResponseSchema>["status"],
+        status: updatedBatch.status as z.infer<typeof BatchResponse>["status"],
         totalUrls: updatedBatch.totalUrls,
         completedCount: updatedBatch.completedCount,
         createdAt: updatedBatch.createdAt,
