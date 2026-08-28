@@ -56,10 +56,17 @@ const worker = new Worker<UrlCheckJobData>(QUEUE_NAME, processUrlCheck, {
   // cross-process rate limiting is a separate upcoming step, not implemented
   // here.
   concurrency: 5,
+  // BullMQ enforces this limiter through Redis, not in-process — so this cap
+  // is shared across ALL worker processes consuming this queue, not
+  // per-process. Combined throughput across every running worker stays at
+  // 10 jobs/sec.
+  limiter: { max: 10, duration: 1000 },
 });
 
 worker.on("ready", () => {
-  console.log(`[worker] started, consuming "${QUEUE_NAME}" (concurrency: 5)`);
+  console.log(
+    `[worker] started, consuming "${QUEUE_NAME}" (concurrency: 5, rate limit: 10/sec)`,
+  );
 });
 
 worker.on("failed", (job, err) => {
