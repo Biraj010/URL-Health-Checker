@@ -1,6 +1,7 @@
 import type { FastifyPluginAsyncZod } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { db } from "../lib/db.js";
+import { registerSseClient, unregisterSseClient } from "../lib/pubsub.js";
 
 const idParamsSchema = z.object({
   id: z.string().uuid(),
@@ -11,9 +12,9 @@ const HEARTBEAT_INTERVAL_MS = 15_000;
 // Registered in index.ts with fastify.register(batchEventsRoutes, { prefix: "/batches" }).
 //
 // GET /batches/:id/events — a Server-Sent Events stream of live updates for
-// one batch. This step only builds the connection mechanics (headers,
-// heartbeat, disconnect handling, one proof-of-life event); wiring it up to
-// real update events via Redis pub/sub is a separate next step.
+// one batch. Connection mechanics (headers, heartbeat, disconnect handling)
+// live here; real update events are forwarded via apps/api/src/lib/pubsub.ts,
+// which subscribes to the Redis channel apps/worker publishes to.
 const batchEventsRoutes: FastifyPluginAsyncZod = async (fastify) => {
   fastify.get(
     "/:id/events",
@@ -58,6 +59,11 @@ const batchEventsRoutes: FastifyPluginAsyncZod = async (fastify) => {
         `data: ${JSON.stringify({ type: "connected", batchId: id })}\n\n`,
       );
 
+      // From here on, real update events published by apps/worker (via
+      // Redis pub/sub — see apps/api/src/lib/pubsub.ts) get forwarded to
+      // this connection whenever they concern this batchId.
+      registerSseClient(id, reply.raw);
+
       // Proxies and load balancers (and some HTTP clients) will silently
       // drop a connection that's gone quiet for too long, treating it as
       // dead — a long-lived SSE stream with no real events for a while
@@ -73,9 +79,7 @@ const batchEventsRoutes: FastifyPluginAsyncZod = async (fastify) => {
 
       request.raw.on("close", () => {
         clearInterval(heartbeat);
-        // TODO: once Redis pub/sub is wired in (next step), unsubscribe this
-        // connection from the batch's update channel here. For now there's
-        // nothing to subscribe to, so there's nothing else to clean up.
+        unregisterSseClient(id, reply.raw);
         request.log.info({ batchId: id }, "SSE connection closed");
       });
     },

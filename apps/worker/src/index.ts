@@ -2,7 +2,9 @@ import { Worker, type Job } from "bullmq";
 import {
   QUEUE_NAME,
   createRedisConnection,
+  PUBSUB_CHANNEL,
   type UrlCheckJobData,
+  type UrlUpdateEvent,
 } from "@url-checker/shared-config";
 import { db } from "./lib/db.js";
 import { urlCheckSemaphore } from "./lib/semaphore.js";
@@ -14,6 +16,12 @@ import { extractTitle } from "./lib/extract-title.js";
 // in interleaved console output.
 const WORKER_TAG = `pid=${process.pid}`;
 
+// Dedicated connection for PUBLISH. BullMQ's own `connection` above is busy
+// with its internal blocking/streaming Redis usage — a publisher (or
+// subscriber) needs its own separate connection rather than sharing one used
+// for other command types.
+const publisher = createRedisConnection();
+
 // Atomically increments the parent Batch's completedCount — called for
 // EVERY terminal Url write, including "cancelled" ones, since the batch is
 // only really done once every url has landed on some final status, whatever
@@ -21,21 +29,38 @@ const WORKER_TAG = `pid=${process.pid}`;
 // up to totalUrls, but only if the batch isn't already "cancelled" — a
 // cancelled batch's in-flight jobs finishing up afterward must never
 // resurrect it back to "completed".
-async function markBatchUrlDone(batchId: string) {
+//
+// Also publishes a full, current snapshot to PUBSUB_CHANNEL so every
+// apps/api instance — regardless of which one (if any) holds an SSE client
+// watching this batch — can forward the update. We build the event from the
+// values this same update just produced rather than re-querying, so it's
+// always an accurate snapshot of the write we just made.
+async function markBatchUrlDone(batchId: string, urlId: string, urlStatus: string) {
   const updatedBatch = await db.batch.update({
     where: { id: batchId },
     data: { completedCount: { increment: 1 } },
   });
 
-  if (
+  const batchIsNowComplete =
     updatedBatch.completedCount === updatedBatch.totalUrls &&
-    updatedBatch.status !== "cancelled"
-  ) {
+    updatedBatch.status !== "cancelled";
+
+  if (batchIsNowComplete) {
     await db.batch.update({
       where: { id: updatedBatch.id },
       data: { status: "completed" },
     });
   }
+
+  const event: UrlUpdateEvent = {
+    batchId,
+    urlId,
+    status: urlStatus,
+    batchStatus: batchIsNowComplete ? "completed" : updatedBatch.status,
+    completedCount: updatedBatch.completedCount,
+    totalUrls: updatedBatch.totalUrls,
+  };
+  await publisher.publish(PUBSUB_CHANNEL, JSON.stringify(event));
 }
 
 // A small, targeted read used right before writing any terminal Url status,
@@ -89,7 +114,7 @@ async function processUrlCheck(job: Job<UrlCheckJobData>): Promise<void> {
       await db.url.update({ where: { id: urlId }, data: { status: "cancelled" } });
       // Still counts as "done" toward completedCount — a cancelled url that
       // finished resolving is no less finished than a successful one.
-      await markBatchUrlDone(batchId);
+      await markBatchUrlDone(batchId, urlId, "cancelled");
       console.log(
         `[worker ${WORKER_TAG}] discarded success result for job ${job.id} — batch was cancelled — urlId=${urlId}`,
       );
@@ -111,7 +136,7 @@ async function processUrlCheck(job: Job<UrlCheckJobData>): Promise<void> {
     // Atomic increment avoids a race when multiple jobs for the same batch
     // complete concurrently (read-then-write would lose updates under
     // concurrency; { increment: 1 } is done as a single SQL statement).
-    await markBatchUrlDone(batchId);
+    await markBatchUrlDone(batchId, urlId, "success");
 
     console.log(`[worker ${WORKER_TAG}] completed job ${job.id} — urlId=${urlId} url=${url} (success)`);
     return;
@@ -125,7 +150,7 @@ async function processUrlCheck(job: Job<UrlCheckJobData>): Promise<void> {
       await db.url.update({ where: { id: urlId }, data: { status: "cancelled" } });
       // Still counts as "done" toward completedCount — see the success
       // branch above for the same reasoning.
-      await markBatchUrlDone(batchId);
+      await markBatchUrlDone(batchId, urlId, "cancelled");
       console.log(
         `[worker ${WORKER_TAG}] discarded permanent-failure result for job ${job.id} — batch was cancelled — urlId=${urlId}`,
       );
@@ -144,7 +169,7 @@ async function processUrlCheck(job: Job<UrlCheckJobData>): Promise<void> {
     });
 
     // Permanent failures still count as "done" — just done-with-failure.
-    await markBatchUrlDone(batchId);
+    await markBatchUrlDone(batchId, urlId, "failed");
 
     // Do NOT throw — returning normally tells BullMQ this job is complete,
     // so it won't be retried. Retrying a permanent failure (404, 403, ...)
@@ -260,7 +285,7 @@ worker.on("failed", async (job, err) => {
   // Whether this landed as "cancelled" or a real "failed", it's now finished
   // — count it toward completedCount either way. The cancel route itself
   // never touches completedCount, so there's no race to worry about here.
-  await markBatchUrlDone(batchId);
+  await markBatchUrlDone(batchId, urlId, finalStatus);
 
   if (finalStatus === "cancelled") {
     console.log(
