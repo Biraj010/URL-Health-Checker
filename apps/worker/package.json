@@ -14,7 +14,8 @@
     "@url-checker/shared-config": "*",
     "@url-checker/shared-types": "*",
     "bullmq": "^6.3.1",
-    "ioredis": "^6.0.0"
+    "ioredis": "^6.0.0",
+    "redis-semaphore": "^5.7.0"
   },
   "devDependencies": {
     "@types/node": "^20.14.10",
