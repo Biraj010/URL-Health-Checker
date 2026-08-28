@@ -4,13 +4,18 @@ import {
   validatorCompiler,
   type ZodTypeProvider,
 } from "fastify-type-provider-zod";
+import batchesRoutes from "./routes/batches.js";
 
 const app = Fastify({ logger: true }).withTypeProvider<ZodTypeProvider>();
 
 app.setValidatorCompiler(validatorCompiler);
 app.setSerializerCompiler(serializerCompiler);
 
-// TODO: register routes here once schemas from schemas/batch.schema.ts are wired up
+app.get("/health", async () => {
+  return { status: "ok" };
+});
+
+app.register(batchesRoutes, { prefix: "/batches" });
 
 const port = Number(process.env.PORT_API ?? 4000);
 
