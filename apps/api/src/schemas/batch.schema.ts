@@ -16,13 +16,13 @@ export const urlStatusSchema = z.enum([
   "cancelled",
 ]);
 
-// Request body for creating a batch by pasting a list of URLs directly.
-//
-// TODO: CSV upload will be supported as an alternative to this JSON body via
-// @fastify/multipart in a later step (multipart/form-data with a CSV file
-// field) — not implemented yet.
+// Backend only accepts a flat urls[] array. CSV upload is parsed client-side
+// in apps/web before being sent here — see README for rationale.
 export const createBatchBodySchema = z.object({
-  urls: z.array(z.string().url()).nonempty(),
+  // 500 is a guardrail assumption, not a hard requirement from product — it's
+  // meant to keep a single batch from overwhelming the worker/queue; revisit
+  // if real usage needs a bigger ceiling.
+  urls: z.array(z.string().url()).min(1).max(500),
 });
 export type CreateBatchBody = z.infer<typeof createBatchBodySchema>;
 
