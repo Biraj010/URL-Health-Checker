@@ -3,6 +3,7 @@ import {
   QUEUE_NAME,
   createRedisConnection,
   PUBSUB_CHANNEL,
+  BATCH_LIST_CACHE_KEY,
   type UrlCheckJobData,
   type UrlUpdateEvent,
 } from "@url-checker/shared-config";
@@ -61,6 +62,16 @@ async function markBatchUrlDone(batchId: string, urlId: string, urlStatus: strin
     totalUrls: updatedBatch.totalUrls,
   };
   await publisher.publish(PUBSUB_CHANNEL, JSON.stringify(event));
+
+  // apps/worker is a separate process from apps/api, so it can't call
+  // apps/api/src/lib/cache.ts's invalidateBatchListCache() directly — it
+  // just deletes the same well-known key itself, via its own Redis client.
+  // completedCount changes on every single terminal write (this function
+  // runs for success, failure, AND cancelled-in-flight finalization), and
+  // that's exactly what GET /batches shows progress via, so every call here
+  // is a user-visible batch state change, not just the ones that also flip
+  // status to "completed".
+  await publisher.del(BATCH_LIST_CACHE_KEY);
 }
 
 // A small, targeted read used right before writing any terminal Url status,

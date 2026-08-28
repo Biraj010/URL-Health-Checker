@@ -11,6 +11,11 @@ import {
 import { normalizeUrls } from "../lib/validate-urls.js";
 import { db } from "../lib/db.js";
 import { urlChecksQueue } from "../lib/queue.js";
+import {
+  getCachedBatchList,
+  setCachedBatchList,
+  invalidateBatchListCache,
+} from "../lib/cache.js";
 
 const idParamsSchema = z.object({
   id: z.string().uuid(),
@@ -74,6 +79,11 @@ const batchesRoutes: FastifyPluginAsyncZod = async (fastify) => {
         return reply.status(500).send({ message: "failed to create batch" });
       }
 
+      // A new batch appearing in the list is itself a state change — don't
+      // let a client that just created a batch see a stale GET /batches
+      // response missing it for up to 30 seconds.
+      await invalidateBatchListCache();
+
       // Only enqueue after the transaction has committed. If this throws
       // partway through, the Url rows already exist as "pending" in Postgres
       // — nothing is lost, but some of them won't have a corresponding queue
@@ -124,15 +134,38 @@ const batchesRoutes: FastifyPluginAsyncZod = async (fastify) => {
     "/",
     {
       schema: {
-        // Intended eventual success response shape: BatchListResponse
         response: {
           200: batchListResponseSchema,
-          501: errorResponseSchema,
         },
       },
     },
     async (_request, reply) => {
-      return reply.status(501).send({ message: "not implemented yet" });
+      // Redis-backed (not in-memory) specifically because this must stay
+      // correct and shared across multiple running API instances — an
+      // in-memory cache would let each instance serve a different stale
+      // view, which is exactly what the spec's "must remain correct when
+      // more than one API instance is serving clients" rules out.
+      const cached = await getCachedBatchList();
+      if (cached !== null) {
+        return reply.status(200).send(JSON.parse(cached));
+      }
+
+      const batches = await db.batch.findMany({
+        orderBy: { createdAt: "desc" },
+      });
+
+      const batchList = batches.map((batch) => ({
+        id: batch.id,
+        status: batch.status as z.infer<typeof batchResponseSchema>["status"],
+        totalUrls: batch.totalUrls,
+        completedCount: batch.completedCount,
+        createdAt: batch.createdAt,
+        updatedAt: batch.updatedAt,
+      }));
+
+      await setCachedBatchList(JSON.stringify(batchList));
+
+      return reply.status(200).send(batchList);
     },
   );
 
@@ -275,6 +308,8 @@ const batchesRoutes: FastifyPluginAsyncZod = async (fastify) => {
         },
       });
 
+      await invalidateBatchListCache();
+
       return reply.status(200).send({
         id: updatedBatch.id,
         status: updatedBatch.status as z.infer<typeof batchResponseSchema>["status"],
@@ -340,6 +375,8 @@ const batchesRoutes: FastifyPluginAsyncZod = async (fastify) => {
           },
         });
       });
+
+      await invalidateBatchListCache();
 
       // Only enqueue after the transaction commits, same reasoning as batch
       // creation: if enqueueing throws partway through here, the Url rows

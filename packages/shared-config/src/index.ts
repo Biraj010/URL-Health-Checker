@@ -31,6 +31,14 @@ export interface UrlUpdateEvent {
   totalUrls: number;
 }
 
+// Redis key for the cached GET /batches list (apps/api/src/lib/cache.ts).
+// Both apps/api (which reads/writes the cache) and apps/worker (which only
+// ever needs to invalidate it, via a direct `redis.del`) reference this
+// exact string — a fixed, well-known key needs no shared module beyond the
+// name itself, but keeping the name here means neither side can drift out
+// of sync with the other.
+export const BATCH_LIST_CACHE_KEY = "batch-list-cache";
+
 /**
  * Creates an ioredis connection configured from REDIS_URL.
  *
