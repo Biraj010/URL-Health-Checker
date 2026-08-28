@@ -1,8 +1,8 @@
 /**
  * Trims whitespace from each URL string in the array.
  *
- * Deliberately does NOT deduplicate — that's a separate decision handled
- * later, not something this utility should decide on its own.
+ * Intentionally does not deduplicate — repeated URLs in one submission are
+ * treated as independent checks. See README for rationale.
  */
 export function normalizeUrls(urls: string[]): string[] {
   return urls.map((url) => url.trim());
