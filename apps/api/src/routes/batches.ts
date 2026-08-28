@@ -3,6 +3,7 @@ import type { FastifyPluginAsyncZod } from "fastify-type-provider-zod";
 import {
   createBatchBodySchema,
   createBatchResponseSchema,
+  batchResponseSchema,
   batchListResponseSchema,
   batchDetailResponseSchema,
 } from "../schemas/batch.schema.js";
@@ -157,7 +158,7 @@ const batchesRoutes: FastifyPluginAsyncZod = async (fastify) => {
       schema: {
         params: idParamsSchema,
         response: {
-          200: z.object({ message: z.string(), cancelledCount: z.number().int() }),
+          200: batchResponseSchema,
           404: errorResponseSchema,
           409: errorResponseSchema,
         },
@@ -177,36 +178,74 @@ const batchesRoutes: FastifyPluginAsyncZod = async (fastify) => {
           .send({ message: `batch already ${batch.status}` });
       }
 
-      // Only "pending" urls are handled here — a queued job can just be
-      // removed outright. "processing" (already in-flight) is a separate,
-      // later step; this step deliberately leaves those (and "success"/
-      // "failed") alone.
+      // Queued (still "pending") urls can just be removed from the queue
+      // outright — nothing has started, so there's nothing to race with.
+      // "processing" (already in-flight) urls are NOT touched here: they're
+      // handled by apps/worker, which checks the batch's status right
+      // before writing its terminal result and writes "cancelled" instead
+      // of "success"/"failed" if it notices this batch was cancelled in the
+      // meantime (see apps/worker/src/index.ts).
       const pendingUrls = await db.url.findMany({
         where: { batchId: id, status: "pending" },
       });
 
-      let cancelledCount = 0;
+      // A pending url counts toward completedCount right here, since nothing
+      // else ever will for it — it never enters the worker, so the worker's
+      // own cancelled-discard-and-increment logic never runs for it. But the
+      // pendingUrls list above can go stale: the worker may pick a row up
+      // (flip it to "processing") between that read and this loop. So each
+      // cancellation is a conditional updateMany guarded on status still
+      // being "pending" — only count it here (and only remove its queue
+      // job) if we actually won that race; if we lost it, leave it alone
+      // entirely and let the worker's own in-flight handling finalize and
+      // count it later. Without this guard, a row could get counted twice
+      // (once here, once by the worker) or its active job could get pulled
+      // out from under a worker that's mid-fetch.
+      let pendingCancelledCount = 0;
       for (const pendingUrl of pendingUrls) {
-        // The job may have already been picked up (raced into "processing")
-        // or completed between our query above and now — getJob returning
-        // undefined just means there's nothing left to remove, not an error.
+        const { count } = await db.url.updateMany({
+          where: { id: pendingUrl.id, status: "pending" },
+          data: { status: "cancelled" },
+        });
+
+        if (count === 0) {
+          // Lost the race — the worker got to it first. Leave it entirely
+          // to the worker's own cancellation handling.
+          continue;
+        }
+
+        // Safe to remove now: we know we won the race while it was still
+        // "pending", so this job should still genuinely be queued/waiting,
+        // not active in a worker.
         const job = await urlChecksQueue.getJob(pendingUrl.id);
         if (job) {
           await job.remove();
         }
 
-        await db.url.update({
-          where: { id: pendingUrl.id },
-          data: { status: "cancelled" },
-        });
-        cancelledCount++;
+        pendingCancelledCount++;
       }
 
-      // Batch.status is intentionally NOT updated here — finalized in a
-      // later step once "processing" handling is also in place.
+      // The batch is considered cancelled from the user's perspective right
+      // away, even though a couple of "processing" rows may not have
+      // resolved yet — completedCount keeps climbing on its own as those
+      // in-flight jobs land (see apps/worker/src/index.ts's markBatchUrlDone,
+      // which now increments for a cancelled-discard result too, and is
+      // guarded not to flip status back to "completed" once it catches up).
+      const updatedBatch = await db.batch.update({
+        where: { id },
+        data: {
+          status: "cancelled",
+          completedCount: { increment: pendingCancelledCount },
+        },
+      });
+
       return reply.status(200).send({
-        message: "pending urls cancelled",
-        cancelledCount,
+        id: updatedBatch.id,
+        status: updatedBatch.status as z.infer<typeof batchResponseSchema>["status"],
+        totalUrls: updatedBatch.totalUrls,
+        completedCount: updatedBatch.completedCount,
+        createdAt: updatedBatch.createdAt,
+        updatedAt: updatedBatch.updatedAt,
       });
     },
   );
@@ -217,12 +256,92 @@ const batchesRoutes: FastifyPluginAsyncZod = async (fastify) => {
       schema: {
         params: idParamsSchema,
         response: {
-          501: errorResponseSchema,
+          200: batchResponseSchema,
+          404: errorResponseSchema,
         },
       },
     },
-    async (_request, reply) => {
-      return reply.status(501).send({ message: "not implemented yet" });
+    async (request, reply) => {
+      const { id } = request.params;
+
+      const batch = await db.batch.findUnique({ where: { id } });
+      if (!batch) {
+        return reply.status(404).send({ message: "batch not found" });
+      }
+
+      const failedUrls = await db.url.findMany({
+        where: { batchId: id, status: "failed" },
+      });
+
+      if (failedUrls.length === 0) {
+        // No-op, not an error — nothing to retry.
+        return reply.status(200).send({
+          id: batch.id,
+          status: batch.status as z.infer<typeof batchResponseSchema>["status"],
+          totalUrls: batch.totalUrls,
+          completedCount: batch.completedCount,
+          createdAt: batch.createdAt,
+          updatedAt: batch.updatedAt,
+        });
+      }
+
+      const updatedBatch = await db.$transaction(async (tx) => {
+        await tx.url.updateMany({
+          where: { id: { in: failedUrls.map((u) => u.id) } },
+          data: { status: "pending", attemptCount: 0, lastError: null },
+        });
+
+        // These urls were previously counted as "done" (they failed) — now
+        // they're not done again, so they come back out of completedCount.
+        // "running" is correct regardless of whether the batch was
+        // "completed" or still partway "running" (only some urls failed) —
+        // either way there's new work pending now.
+        return tx.batch.update({
+          where: { id },
+          data: {
+            completedCount: { decrement: failedUrls.length },
+            status: "running",
+          },
+        });
+      });
+
+      // Only enqueue after the transaction commits, same reasoning as batch
+      // creation: if enqueueing throws partway through here, the Url rows
+      // are already reset to "pending" in Postgres — nothing is lost, just
+      // some of them won't have a corresponding queue job yet.
+      try {
+        await Promise.all(
+          failedUrls.map((failedUrl) =>
+            urlChecksQueue.add(
+              "check-url",
+              { urlId: failedUrl.id, url: failedUrl.url },
+              {
+                // A fresh job id is required: the original url.id likely
+                // still exists in Redis as a completed/failed job, and
+                // BullMQ no-ops an .add() with a jobId it already knows
+                // about rather than creating a new job.
+                jobId: `${failedUrl.id}:retry:${Date.now()}`,
+                attempts: 3,
+                backoff: { type: "exponential", delay: 1000 },
+              },
+            ),
+          ),
+        );
+      } catch (err) {
+        request.log.error(
+          { err, batchId: id },
+          "failed to enqueue one or more retry jobs after resetting failed urls",
+        );
+      }
+
+      return reply.status(200).send({
+        id: updatedBatch.id,
+        status: updatedBatch.status as z.infer<typeof batchResponseSchema>["status"],
+        totalUrls: updatedBatch.totalUrls,
+        completedCount: updatedBatch.completedCount,
+        createdAt: updatedBatch.createdAt,
+        updatedAt: updatedBatch.updatedAt,
+      });
     },
   );
 };

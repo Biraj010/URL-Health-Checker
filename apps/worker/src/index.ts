@@ -14,17 +14,23 @@ import { extractTitle } from "./lib/extract-title.js";
 // in interleaved console output.
 const WORKER_TAG = `pid=${process.pid}`;
 
-// Atomically increments the parent Batch's completedCount and flips it to
-// "completed" once every url has been finalized (success or failed) — same
-// pattern used by both the permanent-failure path here and the 'failed'
-// listener below, so it lives in one place.
+// Atomically increments the parent Batch's completedCount — called for
+// EVERY terminal Url write, including "cancelled" ones, since the batch is
+// only really done once every url has landed on some final status, whatever
+// that status is. Flips Batch.status to "completed" once the count catches
+// up to totalUrls, but only if the batch isn't already "cancelled" — a
+// cancelled batch's in-flight jobs finishing up afterward must never
+// resurrect it back to "completed".
 async function markBatchUrlDone(batchId: string) {
   const updatedBatch = await db.batch.update({
     where: { id: batchId },
     data: { completedCount: { increment: 1 } },
   });
 
-  if (updatedBatch.completedCount === updatedBatch.totalUrls) {
+  if (
+    updatedBatch.completedCount === updatedBatch.totalUrls &&
+    updatedBatch.status !== "cancelled"
+  ) {
     await db.batch.update({
       where: { id: updatedBatch.id },
       data: { status: "completed" },
@@ -81,6 +87,9 @@ async function processUrlCheck(job: Job<UrlCheckJobData>): Promise<void> {
     const { batchId, batch } = await getBatchStatusForUrl(urlId);
     if (batch.status === "cancelled") {
       await db.url.update({ where: { id: urlId }, data: { status: "cancelled" } });
+      // Still counts as "done" toward completedCount — a cancelled url that
+      // finished resolving is no less finished than a successful one.
+      await markBatchUrlDone(batchId);
       console.log(
         `[worker ${WORKER_TAG}] discarded success result for job ${job.id} — batch was cancelled — urlId=${urlId}`,
       );
@@ -114,6 +123,9 @@ async function processUrlCheck(job: Job<UrlCheckJobData>): Promise<void> {
     const { batchId, batch } = await getBatchStatusForUrl(urlId);
     if (batch.status === "cancelled") {
       await db.url.update({ where: { id: urlId }, data: { status: "cancelled" } });
+      // Still counts as "done" toward completedCount — see the success
+      // branch above for the same reasoning.
+      await markBatchUrlDone(batchId);
       console.log(
         `[worker ${WORKER_TAG}] discarded permanent-failure result for job ${job.id} — batch was cancelled — urlId=${urlId}`,
       );
@@ -245,19 +257,18 @@ worker.on("failed", async (job, err) => {
     return;
   }
 
+  // Whether this landed as "cancelled" or a real "failed", it's now finished
+  // — count it toward completedCount either way. The cancel route itself
+  // never touches completedCount, so there's no race to worry about here.
+  await markBatchUrlDone(batchId);
+
   if (finalStatus === "cancelled") {
     console.log(
       `[worker ${WORKER_TAG}] discarded exhausted-retry failure for job ${job.id} — batch was cancelled — urlId=${urlId}`,
     );
-    // Do NOT touch Batch.completedCount here — the cancel route finalizes
-    // counts once cancellation completes, to avoid double-counting or
-    // racing with its own updates.
-    return;
+  } else {
+    console.log(
+      `[worker ${WORKER_TAG}] finalized job ${job.id} as failed after exhausting retries — urlId=${urlId}`,
+    );
   }
-
-  await markBatchUrlDone(batchId);
-
-  console.log(
-    `[worker ${WORKER_TAG}] finalized job ${job.id} as failed after exhausting retries — urlId=${urlId}`,
-  );
 });
