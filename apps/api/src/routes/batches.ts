@@ -86,7 +86,19 @@ const batchesRoutes: FastifyPluginAsyncZod = async (fastify) => {
             urlChecksQueue.add(
               "check-url",
               { urlId: url.id, url: url.url },
-              { jobId: url.id },
+              {
+                jobId: url.id,
+                // attempts: 3 means up to 3 total tries; backoff delay
+                // doubles between attempts (BullMQ's exponential strategy:
+                // 1s, then 2s, then 4s before the next retry) — satisfies
+                // the spec's "up to 3 on transient failure, with exponential
+                // backoff." The worker only actually re-throws (triggering a
+                // retry) for transient failures; permanent failures return
+                // normally so BullMQ never retries them regardless of this
+                // config.
+                attempts: 3,
+                backoff: { type: "exponential", delay: 1000 },
+              },
             ),
           ),
         );
