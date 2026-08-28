@@ -1,0 +1,19 @@
+{
+  "name": "url-checker",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "docker compose up -d && npm-run-all --parallel dev:api dev:worker dev:web",
+    "dev:api": "npm run dev --workspace=@url-checker/api",
+    "dev:worker": "npm run dev --workspace=@url-checker/worker",
+    "dev:web": "node scripts/dev-web.js",
+    "docker:down": "docker compose down"
+  },
+  "devDependencies": {
+    "npm-run-all": "^4.1.5"
+  }
+}

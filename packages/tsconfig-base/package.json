@@ -1,0 +1,8 @@
+{
+  "name": "@url-checker/tsconfig-base",
+  "private": true,
+  "version": "1.0.0",
+  "files": [
+    "base.json"
+  ]
+}
