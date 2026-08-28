@@ -5,6 +5,7 @@ import {
   type ZodTypeProvider,
 } from "fastify-type-provider-zod";
 import batchesRoutes from "./routes/batches.js";
+import batchEventsRoutes from "./routes/batch-events.js";
 
 const app = Fastify({ logger: true }).withTypeProvider<ZodTypeProvider>();
 
@@ -16,6 +17,7 @@ app.get("/health", async () => {
 });
 
 app.register(batchesRoutes, { prefix: "/batches" });
+app.register(batchEventsRoutes, { prefix: "/batches" });
 
 const port = Number(process.env.PORT_API ?? 4000);
 
