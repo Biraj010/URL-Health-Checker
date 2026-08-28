@@ -1,19 +1,16 @@
 import { Queue } from "bullmq";
-import IORedis from "ioredis";
+import {
+  QUEUE_NAME,
+  createRedisConnection,
+  type UrlCheckJobData,
+} from "@url-checker/shared-config";
+
+export type { UrlCheckJobData };
 
 // Shared by the API (enqueues jobs here) and apps/worker (consumes them) —
 // this file only sets up the API side for now.
-const connection = new IORedis(process.env.REDIS_URL ?? "redis://localhost:6379", {
-  maxRetriesPerRequest: null,
-});
+const connection = createRedisConnection();
 
-export const URL_CHECKS_QUEUE_NAME = "url-checks";
-
-export interface UrlCheckJobData {
-  urlId: string;
-  url: string;
-}
-
-export const urlChecksQueue = new Queue<UrlCheckJobData>(URL_CHECKS_QUEUE_NAME, {
+export const urlChecksQueue = new Queue<UrlCheckJobData>(QUEUE_NAME, {
   connection,
 });
