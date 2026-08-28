@@ -1,0 +1,58 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum BatchStatus {
+  pending
+  running
+  completed
+  cancelled
+}
+
+enum UrlStatus {
+  pending
+  processing
+  success
+  failed
+  cancelled
+}
+
+model Batch {
+  id             String      @id @default(uuid())
+  status         BatchStatus @default(pending)
+  totalUrls      Int
+  completedCount Int         @default(0)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  urls           Url[]
+
+  @@index([createdAt])
+}
+
+model Url {
+  id             String     @id @default(uuid())
+  batchId        String
+  batch          Batch      @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  url            String
+  status         UrlStatus  @default(pending)
+
+  httpStatus     Int?
+  responseTimeMs Int?
+  title          String?
+
+  attemptCount   Int        @default(0)
+  lastError      String?
+
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  @@index([batchId])
+  @@index([batchId, status])
+}
