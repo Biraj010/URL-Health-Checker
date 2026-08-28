@@ -46,6 +46,20 @@ subscriber.on("message", (channel, message) => {
     return;
   }
 
+  // Design intent (resync contract with GET /batches/:id): every
+  // UrlUpdateEvent carries the batch's CURRENT full completedCount/status
+  // snapshot, not a delta relative to the previous event. This is what
+  // makes the intended client flow — always call GET /batches/:id first for
+  // ground truth, and only then open this SSE stream, never replaying
+  // history for a stream that connected late — safe against the small
+  // window between that REST call and the SSE connection opening: a client
+  // that applies each event's completedCount/status directly (cumulative
+  // state) rather than incrementing a local counter naturally self-corrects
+  // even if it missed an event or two in that window, because the very next
+  // event it does receive still reflects reality as of right then. A
+  // delta-based client, by contrast, could permanently drift out of sync
+  // from a single missed event with no way to recover short of polling
+  // GET /batches/:id again.
   const payload = `data: ${JSON.stringify(event)}\n\n`;
   for (const res of clients) {
     res.write(payload);

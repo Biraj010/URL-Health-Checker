@@ -4,6 +4,7 @@ import {
   createBatchBodySchema,
   createBatchResponseSchema,
   batchResponseSchema,
+  urlResponseSchema,
   batchListResponseSchema,
   batchDetailResponseSchema,
 } from "../schemas/batch.schema.js";
@@ -140,15 +141,50 @@ const batchesRoutes: FastifyPluginAsyncZod = async (fastify) => {
     {
       schema: {
         params: idParamsSchema,
-        // Intended eventual success response shape: BatchDetailResponse
         response: {
           200: batchDetailResponseSchema,
-          501: errorResponseSchema,
+          404: errorResponseSchema,
         },
       },
     },
-    async (_request, reply) => {
-      return reply.status(501).send({ message: "not implemented yet" });
+    async (request, reply) => {
+      const { id } = request.params;
+
+      // This is the "ground truth" half of the REST-then-SSE resync
+      // contract: a client is expected to call this BEFORE opening
+      // GET /batches/:id/events, precisely so it has complete, correct
+      // current state before subscribing to incremental updates. That's why
+      // this returns the full Url list with everything the UI needs to
+      // render a cold-load view, not just the batch's own summary fields —
+      // anything missing here would be a gap the SSE stream can never fill,
+      // since it only ever reports what happened after a client connects.
+      const batch = await db.batch.findUnique({
+        where: { id },
+        include: { urls: true },
+      });
+
+      if (!batch) {
+        return reply.status(404).send({ message: "batch not found" });
+      }
+
+      return reply.status(200).send({
+        id: batch.id,
+        status: batch.status as z.infer<typeof batchResponseSchema>["status"],
+        totalUrls: batch.totalUrls,
+        completedCount: batch.completedCount,
+        createdAt: batch.createdAt,
+        updatedAt: batch.updatedAt,
+        urls: batch.urls.map((url) => ({
+          id: url.id,
+          url: url.url,
+          status: url.status as z.infer<typeof urlResponseSchema>["status"],
+          httpStatus: url.httpStatus,
+          responseTimeMs: url.responseTimeMs,
+          title: url.title,
+          attemptCount: url.attemptCount,
+          lastError: url.lastError,
+        })),
+      });
     },
   );
 
