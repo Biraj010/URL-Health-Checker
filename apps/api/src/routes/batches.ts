@@ -157,12 +157,57 @@ const batchesRoutes: FastifyPluginAsyncZod = async (fastify) => {
       schema: {
         params: idParamsSchema,
         response: {
-          501: errorResponseSchema,
+          200: z.object({ message: z.string(), cancelledCount: z.number().int() }),
+          404: errorResponseSchema,
+          409: errorResponseSchema,
         },
       },
     },
-    async (_request, reply) => {
-      return reply.status(501).send({ message: "not implemented yet" });
+    async (request, reply) => {
+      const { id } = request.params;
+
+      const batch = await db.batch.findUnique({ where: { id } });
+      if (!batch) {
+        return reply.status(404).send({ message: "batch not found" });
+      }
+
+      if (batch.status === "completed" || batch.status === "cancelled") {
+        return reply
+          .status(409)
+          .send({ message: `batch already ${batch.status}` });
+      }
+
+      // Only "pending" urls are handled here — a queued job can just be
+      // removed outright. "processing" (already in-flight) is a separate,
+      // later step; this step deliberately leaves those (and "success"/
+      // "failed") alone.
+      const pendingUrls = await db.url.findMany({
+        where: { batchId: id, status: "pending" },
+      });
+
+      let cancelledCount = 0;
+      for (const pendingUrl of pendingUrls) {
+        // The job may have already been picked up (raced into "processing")
+        // or completed between our query above and now — getJob returning
+        // undefined just means there's nothing left to remove, not an error.
+        const job = await urlChecksQueue.getJob(pendingUrl.id);
+        if (job) {
+          await job.remove();
+        }
+
+        await db.url.update({
+          where: { id: pendingUrl.id },
+          data: { status: "cancelled" },
+        });
+        cancelledCount++;
+      }
+
+      // Batch.status is intentionally NOT updated here — finalized in a
+      // later step once "processing" handling is also in place.
+      return reply.status(200).send({
+        message: "pending urls cancelled",
+        cancelledCount,
+      });
     },
   );
 
