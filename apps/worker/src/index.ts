@@ -32,6 +32,17 @@ async function markBatchUrlDone(batchId: string) {
   }
 }
 
+// A small, targeted read used right before writing any terminal Url status,
+// to see whether the parent Batch was cancelled while this check was
+// in flight. One round trip: the Url's batchId plus the Batch's current
+// status, via a relation select rather than two separate queries.
+async function getBatchStatusForUrl(urlId: string) {
+  return db.url.findUniqueOrThrow({
+    where: { id: urlId },
+    select: { batchId: true, batch: { select: { status: true } } },
+  });
+}
+
 async function processUrlCheck(job: Job<UrlCheckJobData>): Promise<void> {
   const { urlId, url } = job.data;
   console.log(`[worker ${WORKER_TAG}] picked up job ${job.id} — urlId=${urlId} url=${url}`);
@@ -63,9 +74,22 @@ async function processUrlCheck(job: Job<UrlCheckJobData>): Promise<void> {
   const classification = classifyResult(result);
 
   if (classification === "success") {
+    // If the batch was cancelled while this check was already in flight, we
+    // discard the real result and mark this URL cancelled instead — we
+    // can't abort an in-progress fetch, so this is the earliest point we can
+    // honor the cancellation.
+    const { batchId, batch } = await getBatchStatusForUrl(urlId);
+    if (batch.status === "cancelled") {
+      await db.url.update({ where: { id: urlId }, data: { status: "cancelled" } });
+      console.log(
+        `[worker ${WORKER_TAG}] discarded success result for job ${job.id} — batch was cancelled — urlId=${urlId}`,
+      );
+      return;
+    }
+
     const title = extractTitle(result.rawBody, result.contentType);
 
-    const updatedUrl = await db.url.update({
+    await db.url.update({
       where: { id: urlId },
       data: {
         status: "success",
@@ -78,14 +102,25 @@ async function processUrlCheck(job: Job<UrlCheckJobData>): Promise<void> {
     // Atomic increment avoids a race when multiple jobs for the same batch
     // complete concurrently (read-then-write would lose updates under
     // concurrency; { increment: 1 } is done as a single SQL statement).
-    await markBatchUrlDone(updatedUrl.batchId);
+    await markBatchUrlDone(batchId);
 
     console.log(`[worker ${WORKER_TAG}] completed job ${job.id} — urlId=${urlId} url=${url} (success)`);
     return;
   }
 
   if (classification === "permanent_failure") {
-    const updatedUrl = await db.url.update({
+    // Same reasoning as the success branch above: cancellation discovered at
+    // the last moment discards the real result.
+    const { batchId, batch } = await getBatchStatusForUrl(urlId);
+    if (batch.status === "cancelled") {
+      await db.url.update({ where: { id: urlId }, data: { status: "cancelled" } });
+      console.log(
+        `[worker ${WORKER_TAG}] discarded permanent-failure result for job ${job.id} — batch was cancelled — urlId=${urlId}`,
+      );
+      return;
+    }
+
+    await db.url.update({
       where: { id: urlId },
       data: {
         status: "failed",
@@ -97,7 +132,7 @@ async function processUrlCheck(job: Job<UrlCheckJobData>): Promise<void> {
     });
 
     // Permanent failures still count as "done" — just done-with-failure.
-    await markBatchUrlDone(updatedUrl.batchId);
+    await markBatchUrlDone(batchId);
 
     // Do NOT throw — returning normally tells BullMQ this job is complete,
     // so it won't be retried. Retrying a permanent failure (404, 403, ...)
@@ -116,8 +151,8 @@ async function processUrlCheck(job: Job<UrlCheckJobData>): Promise<void> {
   // whether to retry again or give up based on job.attemptsMade vs
   // job.opts.attempts; we don't need to duplicate that accounting here. Once
   // attempts are exhausted, BullMQ emits a 'failed' event instead of calling
-  // this processor again, which is where final failure is actually finalized
-  // (see the worker.on("failed", ...) listener below).
+  // this processor again, which is where final failure — or cancellation —
+  // is actually finalized (see the worker.on("failed", ...) listener below).
   const errorMessage = result.errorMessage ?? `HTTP ${result.httpStatus}`;
 
   await db.url.update({
@@ -185,17 +220,24 @@ worker.on("failed", async (job, err) => {
 
   const { urlId } = job.data;
 
+  // If the batch was cancelled while this last retry was in flight, we
+  // discard the real (failed) result and mark this URL cancelled instead —
+  // we can't abort an in-progress fetch, so this is the earliest point we
+  // can honor the cancellation.
+  const { batchId, batch } = await getBatchStatusForUrl(urlId);
+  const finalStatus = batch.status === "cancelled" ? "cancelled" : "failed";
+
   // Guard against double-processing: only finalize if this row hasn't
   // already been finalized (e.g. by the permanent-failure path, or by an
   // earlier — theoretically impossible, but defended against anyway —
   // duplicate 'failed' event). updateMany + where on status lets us check
   // and update atomically instead of read-then-write.
   const { count } = await db.url.updateMany({
-    where: { id: urlId, status: { notIn: ["success", "failed"] } },
-    data: {
-      status: "failed",
-      lastError: err.message,
-    },
+    where: { id: urlId, status: { notIn: ["success", "failed", "cancelled"] } },
+    data:
+      finalStatus === "cancelled"
+        ? { status: "cancelled" }
+        : { status: "failed", lastError: err.message },
   });
 
   if (count === 0) {
@@ -203,8 +245,17 @@ worker.on("failed", async (job, err) => {
     return;
   }
 
-  const url = await db.url.findUniqueOrThrow({ where: { id: urlId } });
-  await markBatchUrlDone(url.batchId);
+  if (finalStatus === "cancelled") {
+    console.log(
+      `[worker ${WORKER_TAG}] discarded exhausted-retry failure for job ${job.id} — batch was cancelled — urlId=${urlId}`,
+    );
+    // Do NOT touch Batch.completedCount here — the cancel route finalizes
+    // counts once cancellation completes, to avoid double-counting or
+    // racing with its own updates.
+    return;
+  }
+
+  await markBatchUrlDone(batchId);
 
   console.log(
     `[worker ${WORKER_TAG}] finalized job ${job.id} as failed after exhausting retries — urlId=${urlId}`,
