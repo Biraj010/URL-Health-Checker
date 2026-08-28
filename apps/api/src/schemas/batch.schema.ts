@@ -26,6 +26,16 @@ export const createBatchBodySchema = z.object({
 });
 export type CreateBatchBody = z.infer<typeof createBatchBodySchema>;
 
+// Response for a successful POST /batches (201). Just enough for the client
+// to start tracking the new batch — not the full BatchResponse shape.
+export const createBatchResponseSchema = z.object({
+  id: z.string().uuid(),
+  status: batchStatusSchema,
+  totalUrls: z.number().int(),
+  createdAt: z.string().datetime(),
+});
+export type CreateBatchResponse = z.infer<typeof createBatchResponseSchema>;
+
 export const batchResponseSchema = z.object({
   id: z.string(),
   status: batchStatusSchema,

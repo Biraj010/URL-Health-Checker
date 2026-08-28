@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { FastifyPluginAsyncZod } from "fastify-type-provider-zod";
 import {
   createBatchBodySchema,
+  createBatchResponseSchema,
   batchListResponseSchema,
   batchDetailResponseSchema,
 } from "../schemas/batch.schema.js";
@@ -22,13 +23,22 @@ const batchesRoutes: FastifyPluginAsyncZod = async (fastify) => {
     {
       schema: {
         body: createBatchBodySchema,
+        // Final response contract: 201 on successful creation.
         response: {
-          501: notImplementedSchema,
+          201: createBatchResponseSchema,
         },
       },
     },
     async (_request, reply) => {
-      return reply.status(501).send({ message: "not implemented yet" });
+      // TODO: insert Batch + Url rows and enqueue check jobs — next step.
+      // Cast needed: only the final 201 shape is declared in `response` above,
+      // so this interim 501 body doesn't type-check against it. Goes away
+      // once the real handler (which only ever returns 201) replaces this.
+      return reply
+        .status(501)
+        .send({ message: "not implemented yet" } as unknown as z.infer<
+          typeof createBatchResponseSchema
+        >);
     },
   );
 
