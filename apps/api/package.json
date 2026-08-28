@@ -15,7 +15,9 @@
     "@prisma/client": "^5.22.0",
     "@url-checker/shared-types": "*",
     "dotenv": "^17.4.2",
-    "fastify": "^4.28.1"
+    "fastify": "^4.28.1",
+    "fastify-type-provider-zod": "^2.1.0",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^20.14.10",
