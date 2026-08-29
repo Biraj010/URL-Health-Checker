@@ -4,7 +4,22 @@ import {
   CreateBatchResponse,
   type CreateBatchBodyType,
   type CreateBatchResponseType,
+  BatchDetailResponse,
+  type BatchDetailResponseType,
 } from "./schemas/batch.schema.js";
+
+// Thrown by api-client functions on a non-2xx response, carrying the HTTP
+// status so callers can distinguish e.g. 404 (not found) from other
+// failures without parsing the error message.
+export class ApiError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
 
 // NEXT_PUBLIC_API_URL is the only env var this module reads. It's set in
 // apps/web/.env.local and must be NEXT_PUBLIC_-prefixed so Next.js exposes it
@@ -53,4 +68,24 @@ export async function createBatch(
   }
 
   return CreateBatchResponse.parse(await res.json());
+}
+
+// GET /batches/:id. cache: 'no-store' for the same reason as listBatches()
+// — this must always reflect apps/api's current state at request time. This
+// endpoint isn't even Redis-cached on the API side (unlike GET /batches), so
+// there's no cache anywhere in the chain to coordinate with; a fresh fetch
+// is the only correct option.
+export async function getBatch(id: string): Promise<BatchDetailResponseType> {
+  const res = await fetch(`${getApiBaseUrl()}/batches/${id}`, {
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    throw new ApiError(
+      res.status,
+      `GET /batches/${id} failed: ${res.status} ${res.statusText}`,
+    );
+  }
+
+  return BatchDetailResponse.parse(await res.json());
 }
