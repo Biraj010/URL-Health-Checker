@@ -10,7 +10,7 @@
     "dev": "docker compose up -d && npm-run-all --parallel dev:api dev:worker dev:web",
     "dev:api": "npm run dev --workspace=@url-checker/api",
     "dev:worker": "npm run dev --workspace=@url-checker/worker",
-    "dev:web": "node scripts/dev-web.js",
+    "dev:web": "npm run dev --workspace=@url-checker/web",
     "docker:down": "docker compose down"
   },
   "devDependencies": {
