@@ -1,36 +1,82 @@
 # Bulk URL Health Checker
 
-Monorepo containing the API, background worker, and web app for checking the health of bulk URLs.
+Submit a batch of URLs (pasted or CSV) and check them all in the background — status code, response time, and page title per URL. The UI shows live progress as each check completes, and a batch can be cancelled or have its failed URLs retried.
 
 ## Structure
 
 - `apps/api` — Fastify + TypeScript backend
 - `apps/worker` — Node + TypeScript background worker
 - `apps/web` — Next.js frontend
-- `packages/shared-types` — TypeScript types shared across api/worker/web
+- `packages/shared-types` — Zod schemas + typed API client, shared across api/worker/web
+- `packages/shared-config` — Redis/queue constants shared across api/worker
 
-## Getting Started
+## Quick Start
 
-Prerequisites: Node.js, npm, and Docker Desktop running.
+Prerequisites: Node.js, npm, Docker Desktop running.
 
 ```bash
 npm install
 npm run dev
 ```
 
-That's it — `npm run dev` is a genuine one-shot command. Before starting the dev servers, its `predev` hook automatically:
-- creates `apps/web/.env.local` with a working default if it doesn't exist yet
-- builds `packages/shared-config` and `packages/shared-types` (their compiled `dist/` output is gitignored, so this is needed on every fresh clone)
-- starts Postgres and Redis via Docker Compose and waits for both to report healthy
-- applies any pending Prisma migrations (`prisma migrate deploy`)
+That's the whole setup. Before starting the dev servers, `npm run dev` automatically:
+- builds the shared packages
+- starts Postgres + Redis via Docker Compose and waits for both to be healthy
+- applies database migrations
+- creates `apps/web/.env.local` with a working default if it doesn't exist
 
-Then it runs the api, worker, and web dev servers in parallel.
+Then it runs api, worker, and web together.
 
-Copy `.env.example` to `.env` and adjust values if needed (a `.env` with local defaults is already included).
+| Service | Port |
+|---|---|
+| Web (Next.js) | 3000 |
+| API (Fastify) | 4000 |
+| Postgres | 5433 (mapped from container's 5432) |
+| Redis | 6379 |
 
-## Design Decisions
+A root `.env` with local defaults is already committed — no setup needed for local dev.
 
-- **CSV upload happens client-side.** The API only ever accepts a flat `urls: string[]` JSON body. `apps/web` parses any CSV upload (e.g. with papaparse) and sends the extracted URLs the same way a pasted list would be sent — the backend never parses CSV.
-- **No deduplication of URLs within a batch.** If a submission contains the same URL more than once, each occurrence becomes its own `Url` row and its own background check job. Deduplication is a real feature some users may want, but it changes what "totalUrls" and per-row results mean, so it's deferred as a deliberate, separate decision rather than silently baked into submission handling.
-- **Enqueue failures after a successful batch insert don't fail the request.** `POST /batches` commits the `Batch` + `Url` rows in a transaction first, then enqueues one BullMQ job per URL. If enqueueing throws partway through, the error is logged but the response is still `201` — the rows already exist as `"pending"` in Postgres, so nothing is lost, just potentially unprocessed. A production version would add a reconciliation job to find `"pending"` urls with no active queue job and re-enqueue them.
-- **Title extraction is regex-based, not a full HTML parser.** `apps/worker/src/lib/extract-title.ts` pulls the first `<title>` tag out of an HTML response with a single regex rather than pulling in a DOM/HTML parsing library (e.g. cheerio). This is a deliberate scope trade-off: it covers the overwhelming majority of real pages correctly and keeps the worker's dependency footprint small, at the cost of not handling pathological markup (e.g. a `<title>` inside a comment, or unusual encoding) with full fidelity. Worth revisiting if title accuracy becomes a real product concern.
+## Architecture
+
+```
+apps/web (Next.js, :3000)
+   │  REST fetch + SSE
+   ▼
+apps/api (Fastify, :4000) ───────► Postgres  (source of truth)
+   │  enqueues jobs                    ▲
+   ▼                                   │  writes results
+Redis  ── queue, rate limit, semaphore, pub/sub, 30s list cache
+   ▲
+   │  consumes jobs
+apps/worker
+```
+
+Postgres is the source of truth for batch/URL state — every read (list, detail, live view resync) goes back to Postgres, either directly or via the API. Redis is coordination-only: the job queue, the global rate limit and concurrency cap, pub/sub fanout for live updates, and a short-lived cache. Nothing important lives only in Redis or in a process's memory.
+
+## Key Decisions
+
+- **Global rate limit + distributed concurrency**: BullMQ's own `concurrency` is per-process, so it's paired with a Redis-backed limiter (10 jobs/sec) and a Redis semaphore (5 in-flight checks) — both hold across every worker process combined, not per-process.
+- **Retries**: BullMQ attempts/backoff, but only for transient failures (network errors, 5xx, 429). Permanent failures (404, 403, etc.) are never retried — the outcome can't change.
+- **Live updates**: SSE, not WebSockets/polling — updates only flow server→client. The client refetches full state on every connect *and* reconnect, since events aren't replayed and could be missed during a drop.
+- **Cache**: Redis-backed, 30s TTL, on the batch list only. Invalidated immediately on batch create or any status change — the TTL is a backstop, not the primary freshness mechanism.
+- **Cancel**: still-queued jobs are removed from the queue directly; jobs already in flight are left to finish and get written as `cancelled` (not their real result) by the worker once they resolve.
+- **Retry-failed**: only resets URLs currently `failed` back to `pending`, and re-enqueues each with a new job id (BullMQ won't re-run a job id it's already seen).
+
+## Assumptions
+
+- CSV is a single column of URLs, one per row — parsed client-side; rows that don't look like a URL are silently skipped.
+- A batch is capped at 500 URLs.
+- Each URL check has a 10s fetch timeout.
+- No deduplication — the same URL twice in one submission becomes two rows and two checks.
+
+## Trade-offs / With More Time
+
+- **No reconciliation sweep**: if enqueueing a job fails right after the batch/URL rows commit, that URL stays `pending` forever with no queue job. A real system would run a periodic job to find and re-enqueue those.
+- **Title extraction is regex-based**, not a full HTML parser — covers the common case, not pathological markup.
+- **No retry history** — `attemptCount` and `lastError` hold only the latest attempt, not a log of each one.
+- **No auth** — anyone with the URL can submit, view, cancel, or retry any batch.
+- **SSE fanout is same-instance only** (each API instance only knows about its own connected clients) — correct across instances via Redis pub/sub, but there's no reconnect backoff tuning or connection limit.
+
+## Horizontal Scaling
+
+Multiple API instances stay correct because nothing they need to agree on lives in process memory: the batch-list cache and the SSE pub/sub channel are both in Redis, so any instance can serve a cache hit or forward a live update regardless of which instance originally produced it. Multiple worker processes stay correct the same way — the rate limit and concurrency cap are enforced in Redis, not as in-process counters, so adding more worker processes increases total capacity without ever exceeding the shared limits.
