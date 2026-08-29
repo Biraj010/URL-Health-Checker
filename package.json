@@ -7,7 +7,8 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "docker compose up -d && npm-run-all --parallel dev:api dev:worker dev:web",
+    "predev": "node -e \"const fs=require('fs');const p='apps/web/.env.local';if(!fs.existsSync(p)){fs.writeFileSync(p,'NEXT_PUBLIC_API_URL=http://localhost:4000\\n');console.log('created '+p+' with a default value');}\" && npm run build --workspace=@url-checker/shared-config && npm run build --workspace=@url-checker/shared-types && docker compose up -d --wait && npm run prisma:deploy --workspace=@url-checker/api",
+    "dev": "npm-run-all --parallel dev:api dev:worker dev:web",
     "dev:api": "npm run dev --workspace=@url-checker/api",
     "dev:worker": "npm run dev --workspace=@url-checker/worker",
     "dev:web": "npm run dev --workspace=@url-checker/web",

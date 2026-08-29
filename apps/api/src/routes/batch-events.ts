@@ -43,10 +43,19 @@ const batchEventsRoutes: FastifyPluginAsyncZod = async (fastify) => {
       // stream that's meant to stay open.
       reply.hijack();
 
+      // This route hijacks the reply and writes headers directly via
+      // reply.raw, bypassing Fastify's normal send pipeline entirely — which
+      // means @fastify/cors's Access-Control-Allow-Origin header (set via
+      // reply.header(), only ever flushed by Fastify's own send lifecycle)
+      // never makes it into this response otherwise. Set it explicitly here
+      // so a browser's EventSource can actually connect to this endpoint,
+      // same as every other route already can via the cors plugin.
+      const origin = `http://localhost:${process.env.PORT_WEB ?? 3000}`;
       reply.raw.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
+        "Access-Control-Allow-Origin": origin,
       });
       // flushHeaders() (writeHead already flushes on Node's http server, but
       // this is belt-and-suspenders for any proxy/agent buffering in front

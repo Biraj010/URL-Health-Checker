@@ -8,10 +8,12 @@
     "build": "tsc -p tsconfig.json",
     "start": "dotenv -e ../../.env -- node dist/index.js",
     "prisma:migrate": "dotenv -e ../../.env -- prisma migrate dev",
+    "prisma:deploy": "dotenv -e ../../.env -- prisma migrate deploy",
     "prisma:studio": "dotenv -e ../../.env -- prisma studio",
     "prisma:generate": "dotenv -e ../../.env -- prisma generate"
   },
   "dependencies": {
+    "@fastify/cors": "^9.0.1",
     "@prisma/client": "^5.22.0",
     "@url-checker/shared-config": "*",
     "@url-checker/shared-types": "*",

@@ -11,12 +11,20 @@ Monorepo containing the API, background worker, and web app for checking the hea
 
 ## Getting Started
 
+Prerequisites: Node.js, npm, and Docker Desktop running.
+
 ```bash
 npm install
 npm run dev
 ```
 
-`npm run dev` starts the infra containers (Postgres, Redis) via Docker Compose, then runs the api, worker, and web dev servers in parallel.
+That's it — `npm run dev` is a genuine one-shot command. Before starting the dev servers, its `predev` hook automatically:
+- creates `apps/web/.env.local` with a working default if it doesn't exist yet
+- builds `packages/shared-config` and `packages/shared-types` (their compiled `dist/` output is gitignored, so this is needed on every fresh clone)
+- starts Postgres and Redis via Docker Compose and waits for both to report healthy
+- applies any pending Prisma migrations (`prisma migrate deploy`)
+
+Then it runs the api, worker, and web dev servers in parallel.
 
 Copy `.env.example` to `.env` and adjust values if needed (a `.env` with local defaults is already included).
 

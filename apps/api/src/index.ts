@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import cors from "@fastify/cors";
 import {
   serializerCompiler,
   validatorCompiler,
@@ -8,6 +9,10 @@ import batchesRoutes from "./routes/batches.js";
 import batchEventsRoutes from "./routes/batch-events.js";
 
 const app = Fastify({ logger: true }).withTypeProvider<ZodTypeProvider>();
+
+
+const webOrigin = `http://localhost:${process.env.PORT_WEB ?? 3000}`;
+app.register(cors, { origin: webOrigin });
 
 app.setValidatorCompiler(validatorCompiler);
 app.setSerializerCompiler(serializerCompiler);
