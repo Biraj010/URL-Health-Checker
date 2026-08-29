@@ -1,4 +1,10 @@
-import { BatchListResponse, type BatchListResponseType } from "./schemas/batch.schema.js";
+import {
+  BatchListResponse,
+  type BatchListResponseType,
+  CreateBatchResponse,
+  type CreateBatchBodyType,
+  type CreateBatchResponseType,
+} from "./schemas/batch.schema.js";
 
 // NEXT_PUBLIC_API_URL is the only env var this module reads. It's set in
 // apps/web/.env.local and must be NEXT_PUBLIC_-prefixed so Next.js exposes it
@@ -29,4 +35,22 @@ export async function listBatches(): Promise<BatchListResponseType> {
   }
 
   return BatchListResponse.parse(await res.json());
+}
+
+// POST /batches. Throws on any non-2xx response so callers can rely on a
+// resolved promise meaning the batch was actually created.
+export async function createBatch(
+  input: CreateBatchBodyType,
+): Promise<CreateBatchResponseType> {
+  const res = await fetch(`${getApiBaseUrl()}/batches`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+
+  if (!res.ok) {
+    throw new Error(`POST /batches failed: ${res.status} ${res.statusText}`);
+  }
+
+  return CreateBatchResponse.parse(await res.json());
 }

@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import Papa from "papaparse";
-import { CreateBatchBody } from "@url-checker/shared-types";
+import { CreateBatchBody, createBatch } from "@url-checker/shared-types";
 
 type Mode = "paste" | "csv";
 
@@ -16,11 +17,14 @@ function isValidUrl(value: string): boolean {
 }
 
 export default function NewBatchPage() {
+  const router = useRouter();
   const [mode, setMode] = useState<Mode>("paste");
   const [pastedUrls, setPastedUrls] = useState<string>("");
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [csvUrls, setCsvUrls] = useState<string[]>([]);
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState<boolean>(false);
 
   function handleCsvFileChange(file: File | null) {
     setCsvFile(file);
@@ -52,8 +56,7 @@ export default function NewBatchPage() {
     return csvUrls;
   }
 
-  function handleSubmit() {
-    // Validation only, for now — actual API call is the next step.
+  async function handleSubmit() {
     const candidateUrls = getUrlsToSubmit();
     const result = CreateBatchBody.safeParse({ urls: candidateUrls });
 
@@ -72,7 +75,18 @@ export default function NewBatchPage() {
     }
 
     setValidationError(null);
-    console.log("validated batch data:", result.data);
+    setSubmitError(null);
+    setSubmitting(true);
+
+    try {
+      const created = await createBatch(result.data);
+      router.push(`/batches/${created.id}`);
+    } catch (err) {
+      setSubmitError(
+        err instanceof Error ? err.message : "Failed to submit batch",
+      );
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -135,13 +149,15 @@ export default function NewBatchPage() {
       {validationError && (
         <p className="mt-4 text-red-600">{validationError}</p>
       )}
+      {submitError && <p className="mt-4 text-red-600">{submitError}</p>}
 
       <button
         type="button"
         onClick={handleSubmit}
-        className="mt-6 rounded border px-4 py-2"
+        disabled={submitting}
+        className="mt-6 rounded border px-4 py-2 disabled:opacity-50"
       >
-        Submit
+        {submitting ? "Submitting..." : "Submit"}
       </button>
     </div>
   );
