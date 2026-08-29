@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Papa from "papaparse";
+import { CreateBatchBody } from "@url-checker/shared-types";
 
 type Mode = "paste" | "csv";
 
@@ -19,10 +20,12 @@ export default function NewBatchPage() {
   const [pastedUrls, setPastedUrls] = useState<string>("");
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [csvUrls, setCsvUrls] = useState<string[]>([]);
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   function handleCsvFileChange(file: File | null) {
     setCsvFile(file);
     setCsvUrls([]);
+    setValidationError(null);
 
     if (!file) return;
 
@@ -39,13 +42,37 @@ export default function NewBatchPage() {
     });
   }
 
-  function handleSubmit() {
-    // Placeholder only — no validation or API call yet.
+  function getUrlsToSubmit(): string[] {
     if (mode === "paste") {
-      console.log("mode: paste", "input:", pastedUrls);
-    } else {
-      console.log("mode: csv", "file:", csvFile?.name ?? null, "urls:", csvUrls);
+      return pastedUrls
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
     }
+    return csvUrls;
+  }
+
+  function handleSubmit() {
+    // Validation only, for now — actual API call is the next step.
+    const candidateUrls = getUrlsToSubmit();
+    const result = CreateBatchBody.safeParse({ urls: candidateUrls });
+
+    if (!result.success) {
+      const message = result.error.issues
+        .map((issue) => {
+          const [field, index] = issue.path;
+          if (field === "urls" && typeof index === "number") {
+            return `URL at position ${index + 1} is not valid`;
+          }
+          return issue.message;
+        })
+        .join("; ");
+      setValidationError(message);
+      return;
+    }
+
+    setValidationError(null);
+    console.log("validated batch data:", result.data);
   }
 
   return (
@@ -77,7 +104,10 @@ export default function NewBatchPage() {
         {mode === "paste" ? (
           <textarea
             value={pastedUrls}
-            onChange={(e) => setPastedUrls(e.target.value)}
+            onChange={(e) => {
+              setPastedUrls(e.target.value);
+              setValidationError(null);
+            }}
             placeholder="One URL per line"
             rows={10}
             className="w-full max-w-xl rounded border p-2"
@@ -101,6 +131,10 @@ export default function NewBatchPage() {
           </div>
         )}
       </div>
+
+      {validationError && (
+        <p className="mt-4 text-red-600">{validationError}</p>
+      )}
 
       <button
         type="button"
