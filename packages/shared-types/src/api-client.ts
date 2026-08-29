@@ -13,11 +13,14 @@ function getApiBaseUrl(): string {
   return url;
 }
 
-// GET /batches. cache: "no-store" so every call hits the API fresh — a
-// Server Component calling this should reflect the current batch list at
-// request time, not a cached snapshot from an earlier build/request.
 export async function listBatches(): Promise<BatchListResponseType> {
   const res = await fetch(`${getApiBaseUrl()}/batches`, {
+    // cache: 'no-store' is intentional — apps/api already serves this
+    // endpoint from a 30-second Redis cache with proper invalidation on
+    // batch create/state-change. Letting Next.js ALSO cache this fetch would
+    // create a second, uncoordinated cache layer that could show data
+    // staler than the API's own guarantee. The API's cache is the single
+    // source of truth for caching behavior here.
     cache: "no-store",
   });
 
