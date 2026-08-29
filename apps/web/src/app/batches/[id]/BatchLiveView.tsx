@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { getBatch, type BatchDetailResponseType } from "@url-checker/shared-types";
+import {
+  getBatch,
+  cancelBatch,
+  retryFailed,
+  type BatchDetailResponseType,
+} from "@url-checker/shared-types";
 
 interface BatchLiveViewProps {
   batchId: string;
@@ -18,6 +23,9 @@ export default function BatchLiveView({
 }: BatchLiveViewProps) {
   const [batch, setBatch] = useState<BatchDetailResponseType>(initialData);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const [isCancelling, setIsCancelling] = useState<boolean>(false);
+  const [isRetrying, setIsRetrying] = useState<boolean>(false);
+  const [controlError, setControlError] = useState<string | null>(null);
 
   useEffect(() => {
     const eventSource = new EventSource(
@@ -80,12 +88,72 @@ export default function BatchLiveView({
     }
   }, [batch.status]);
 
+  async function handleCancel() {
+    setControlError(null);
+    setIsCancelling(true);
+    try {
+      await cancelBatch(batchId);
+      const fresh = await getBatch(batchId);
+      setBatch(fresh);
+    } catch (err) {
+      setControlError(
+        `Failed to cancel: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setIsCancelling(false);
+    }
+  }
+
+  async function handleRetryFailed() {
+    setControlError(null);
+    setIsRetrying(true);
+    try {
+      await retryFailed(batchId);
+      const fresh = await getBatch(batchId);
+      setBatch(fresh);
+    } catch (err) {
+      setControlError(
+        `Failed to retry: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setIsRetrying(false);
+    }
+  }
+
+  const canCancel = batch.status === "pending" || batch.status === "running";
+  const canRetryFailed =
+    isTerminal(batch.status) && batch.urls.some((url) => url.status === "failed");
+
   return (
     <div>
       <p>Status: {batch.status}</p>
       <p>
         Progress: {batch.completedCount} / {batch.totalUrls}
       </p>
+
+      <div className="mt-4 flex items-center gap-2">
+        {canCancel && (
+          <button
+            type="button"
+            onClick={handleCancel}
+            disabled={isCancelling}
+            className="rounded border px-3 py-1 disabled:opacity-50"
+          >
+            {isCancelling ? "Cancelling..." : "Cancel"}
+          </button>
+        )}
+        {canRetryFailed && (
+          <button
+            type="button"
+            onClick={handleRetryFailed}
+            disabled={isRetrying}
+            className="rounded border px-3 py-1 disabled:opacity-50"
+          >
+            {isRetrying ? "Retrying..." : "Retry Failed"}
+          </button>
+        )}
+      </div>
+      {controlError && <p className="mt-2 text-red-600">{controlError}</p>}
 
       <table className="mt-4 w-full border-collapse text-left">
         <thead>

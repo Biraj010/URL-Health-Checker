@@ -89,3 +89,38 @@ export async function getBatch(id: string): Promise<BatchDetailResponseType> {
 
   return BatchDetailResponse.parse(await res.json());
 }
+
+// POST /batches/:id/cancel. Throws (via ApiError) on any non-2xx response —
+// including the 404 (not found) and 409 (already finished/cancelled) the API
+// can return — so a resolved promise always means the batch was actually
+// cancelled. Callers that want the resulting batch state should refetch via
+// getBatch() rather than rely on this response, per the wait-and-refetch
+// pattern used elsewhere in apps/web.
+export async function cancelBatch(id: string): Promise<void> {
+  const res = await fetch(`${getApiBaseUrl()}/batches/${id}/cancel`, {
+    method: "POST",
+  });
+
+  if (!res.ok) {
+    throw new ApiError(
+      res.status,
+      `POST /batches/${id}/cancel failed: ${res.status} ${res.statusText}`,
+    );
+  }
+}
+
+// POST /batches/:id/retry-failed. Throws (via ApiError) on any non-2xx
+// response. Note the API returns 200 (not an error) even when there's
+// nothing to retry — that's a legitimate no-op, not a failure.
+export async function retryFailed(id: string): Promise<void> {
+  const res = await fetch(`${getApiBaseUrl()}/batches/${id}/retry-failed`, {
+    method: "POST",
+  });
+
+  if (!res.ok) {
+    throw new ApiError(
+      res.status,
+      `POST /batches/${id}/retry-failed failed: ${res.status} ${res.statusText}`,
+    );
+  }
+}
